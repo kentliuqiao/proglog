@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type Segment struct {
+type segment struct {
 	store *store
 	index *index
 	// baseOffset is the offset of the first record in the segment.
@@ -20,8 +20,8 @@ type Segment struct {
 	config Config
 }
 
-func newSegment(dir string, baseOffset uint64, c Config) (*Segment, error) {
-	s := &Segment{
+func newSegment(dir string, baseOffset uint64, c Config) (*segment, error) {
+	s := &segment{
 		baseOffset: baseOffset,
 		config:     c,
 	}
@@ -66,7 +66,7 @@ func newSegment(dir string, baseOffset uint64, c Config) (*Segment, error) {
 	return s, nil
 }
 
-func (s *Segment) Append(record *api.Record) (offset uint64, err error) {
+func (s *segment) Append(record *api.Record) (offset uint64, err error) {
 	curr := s.nextOffset
 	record.Offset = curr
 	p, err := proto.Marshal(record)
@@ -85,7 +85,7 @@ func (s *Segment) Append(record *api.Record) (offset uint64, err error) {
 	return curr, nil
 }
 
-func (s *Segment) Read(off uint64) (*api.Record, error) {
+func (s *segment) Read(off uint64) (*api.Record, error) {
 	if off < s.baseOffset {
 		return nil, fmt.Errorf("offset %d is less than the base offset %d", off, s.baseOffset)
 	}
@@ -106,12 +106,12 @@ func (s *Segment) Read(off uint64) (*api.Record, error) {
 	return record, err
 }
 
-func (s *Segment) IsMaxed() bool {
+func (s *segment) IsMaxed() bool {
 	return s.store.size >= s.config.Segment.MaxStoreBytes ||
 		s.index.size >= s.config.Segment.MaxIndexBytes
 }
 
-func (s *Segment) Remove() error {
+func (s *segment) Remove() error {
 	if err := s.Close(); err != nil {
 		return err
 	}
@@ -123,7 +123,7 @@ func (s *Segment) Remove() error {
 	return os.Remove(s.store.Name())
 }
 
-func (s *Segment) Close() error {
+func (s *segment) Close() error {
 	if err := s.index.Close(); err != nil {
 		return err
 	}

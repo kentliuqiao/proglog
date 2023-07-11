@@ -3,8 +3,20 @@ package server
 import (
 	"context"
 
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
+	grpc_auth "github.com/grpc-ecosystem/go-grpc-middleware/auth"
 	api "github.com/kentliuqiao/proglog/api/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
+)
+
+const (
+	objectWildcard = "*"
+	produceAction  = "produce"
+	consumeAction  = "consume"
 )
 
 type CommitLog interface {
@@ -12,8 +24,13 @@ type CommitLog interface {
 	Read(uint64) (*api.Record, error)
 }
 
+type Authorizer interface {
+	Authorize(subject, object, action string) error
+}
+
 type Config struct {
-	CommitLog CommitLog
+	CommitLog  CommitLog
+	Authorizer Authorizer
 }
 
 type grpcServer struct {
@@ -22,6 +39,21 @@ type grpcServer struct {
 }
 
 var _ api.LogServer = (*grpcServer)(nil)
+
+func NewGRPCServer(config *Config, opt ...grpc.ServerOption) (*grpc.Server, error) {
+	opt = append(opt,
+		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(grpc_auth.StreamServerInterceptor(authenticate))),
+		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(grpc_auth.UnaryServerInterceptor(authenticate))),
+	)
+	srv := grpc.NewServer(opt...)
+	s, err := newGrpcServer(config)
+	if err != nil {
+		return nil, err
+	}
+	api.RegisterLogServer(srv, s)
+
+	return srv, nil
+}
 
 func newGrpcServer(config *Config) (srv *grpcServer, err error) {
 	srv = &grpcServer{
@@ -33,6 +65,13 @@ func newGrpcServer(config *Config) (srv *grpcServer, err error) {
 // Produce implements the Produce method of the LogServer interface.
 func (s *grpcServer) Produce(ctx context.Context, req *api.ProduceRequest,
 ) (*api.ProduceResponse, error) {
+	if err := s.Authorizer.Authorize(
+		subject(ctx),
+		objectWildcard,
+		produceAction,
+	); err != nil {
+		return nil, err
+	}
 	offset, err := s.CommitLog.Append(req.Record)
 	if err != nil {
 		return nil, err
@@ -45,6 +84,13 @@ func (s *grpcServer) Produce(ctx context.Context, req *api.ProduceRequest,
 // Consume implements the Consume method of the LogServer interface.
 func (s *grpcServer) Consume(ctx context.Context, req *api.ConsumeRequest,
 ) (*api.ConsumeResponse, error) {
+	if err := s.Authorizer.Authorize(
+		subject(ctx),
+		objectWildcard,
+		consumeAction,
+	); err != nil {
+		return nil, err
+	}
 	record, err := s.CommitLog.Read(req.Offset)
 	if err != nil {
 		return nil, err
@@ -92,13 +138,25 @@ func (s *grpcServer) ConsumeStream(req *api.ConsumeRequest, stream api.Log_Consu
 	}
 }
 
-func NewGRPCServer(config *Config) (*grpc.Server, error) {
-	srv := grpc.NewServer()
-	s, err := newGrpcServer(config)
-	if err != nil {
-		return nil, err
+func authenticate(ctx context.Context) (context.Context, error) {
+	peer, ok := peer.FromContext(ctx)
+	if !ok {
+		return nil, status.New(codes.Unknown, "no peer found").Err()
 	}
-	api.RegisterLogServer(srv, s)
 
-	return srv, nil
+	if peer.AuthInfo == nil {
+		return context.WithValue(ctx, subjectContextKey{}, ""), nil
+	}
+
+	tlsInfo := peer.AuthInfo.(credentials.TLSInfo)
+	subject := tlsInfo.State.VerifiedChains[0][0].Subject.CommonName
+	ctx = context.WithValue(ctx, subjectContextKey{}, subject)
+
+	return ctx, nil
 }
+
+func subject(ctx context.Context) string {
+	return ctx.Value(subjectContextKey{}).(string)
+}
+
+type subjectContextKey struct{}

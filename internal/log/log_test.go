@@ -52,6 +52,8 @@ func testOutOfRangeErr(t *testing.T, l *Log) {
 	read, err := l.Read(1)
 	require.Nil(t, read)
 	require.Error(t, err)
+	apiErr := err.(api.ErrOffsetOutOfRange)
+	require.Equal(t, apiErr.Offset, uint64(1))
 }
 
 func testInitExisting(t *testing.T, l *Log) {
